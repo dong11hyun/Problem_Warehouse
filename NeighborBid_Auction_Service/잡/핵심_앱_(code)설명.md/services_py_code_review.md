@@ -87,13 +87,38 @@ Django ORM 에서의 동작과정
 channel_layer = get_channel_layer()
 async_to_sync(channel_layer.group_send)(f'auction_{auction_id}', { ... })
 ```
+## def buy_now(auction_id, buyer): 동기 함수 전체! 
 
 - get_channel_layer(): 프로젝트에 설정된 채널 레이어(보통 Redis)를 가져오는 함수입니다
 
-- async_to_sync(): 비동기 함수를 동기 함수로 변환하는 함수입니다
+- async_to_sync(): 
 
-- 채널 레이어는 기본적으로 비동기(Async) 방식으로 작동합니다. **하지만 현재 buy_now 함수는 동기(Sync) 함수** 이므로, 비동기 작업을 동기 작업처럼 실행할 수 있게 변환해주는 도구입니다.
+- 채널 레이어는 비동기(Async) 방식으로 작동합니다. **하지만 buy_now 함수는 동기(Sync) 함수** 이므로, 비동기 작업을 동기 작업처럼 실행할 수 있게 변환해주는 도구입니다.
+
+>async_to_sync는
+ 비동기를 바꾸는 것이 아니고,
+ 동기 코드에서 비동기 함수를 실행할 수 있게 이벤트 루프를 연결해주는 브리지
+
+#### DB는 결과적으로 어디에서 저장되는가?
+코드 상에서 .save()나 .create()가 호출될 때 SQL이 실행되지만, 실제로 DB에 영구적으로 반영 **(Commit)** 되는 시점은 딱 한 곳입니다.
 
 - `buyer_wallet.refresh_from_db()` : (내장)DB에서 가장 최신의 데이터를 가져오도록 합니다.
 
-- `transaction.on_commit(send_sold_out_notification)` : (내장)현재 진행 중인 DB 트랜잭션이 성공적으로 커밋(확정)된 직후에 `send_sold_out_notification` 함수를 실행합니다.
+- **`transaction.on_commit(send_sold_out_notification)` : (내장)현재 진행 중인 DB가 성공적으로 커밋(확정)되고,(atomic 트랜잭션 통과) 이후에 `send_sold_out_notification` 함수를 실행합니다.**
+
+**핵심 포인트**
+
+- **만약 on_commit 되고, send_sold_out_notification 내부에서 에러가 터진다면?**
+
+DB 데이터: 안전합니다. 이미 커밋이 끝난 뒤에 함수가 실행되었기 때문에, 뒤늦게 에러가 나도 DB 트랜잭션은 롤백되지 않습니다. 즉, 구매는 정상적으로 완료된 상태입니다.
+
+사용자 경험:
+코드에는 try...except 구문이 있어서 에러를 잡아내므로(print), 사용자는 "축하합니다!" 메시지를 정상적으로 보게 됩니다.
+
+만약 try...except가 없었다면? 사용자는 500 에러를 볼 수도 있지만, DB에는 이미 구매 처리가 되어 있습니다.
+
+### `transaction.on_commit()` 의 장점! (왜 썼나?)
+
+- **on_commit 미사용 시** : 알림 실패 -> 전체 로직 에러 -> 결제까지 롤백됨 (알림 때문에 물건을 못 사는 억울한 상황 발생)
+
+- **on_commit 사용 시** (현재 코드): 결제 성공 -> 알림 실패 -> 물건은 샀음 (알림만 안 옴, 훨씬 안전함)
