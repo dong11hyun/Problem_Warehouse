@@ -114,4 +114,55 @@ _ _ 자체는 `관계` 가 있으면 모두 건너갈 수 있다
 
 두 번째 인자 'recent': "만약 sort 값이 없으면(사용자가 아무것도 안 눌렀으면), 기본값으로 'recent'(최신순)를 가져와라."
 
-base 파일에 'q' 로 name 만들어서 현재 'q'
+base 파일에 'q' 로 name 만들어서 현재 'q'로 사용한다.
+
+---
+
+`@login_required` : Django에서 제공하는 데코레이터
+
+
+동작원리
+1. 사용자가 /auction/3/ 접근
+
+2. Django가 login_required 먼저 실행
+
+3. 로그인 X → 로그인 페이지로 리다이렉트
+
+4. 로그인 O → auction_detail 실행
+
+```
+@login_required
+def auction_detail(..):
+
+⬇️ 실제로 이렇게 바꿔서 처리한다.
+
+auction_detail = login_required(auction_detail)
+```
+```
+# '이름(Key)': 실제내용(Value)
+context = {
+    
+    'auction': auction,      
+    # 이제부터 HTML에서 'auction'이라고 부른다!
+    'other_items': other_items,    
+    # 이제부터 HTML에서 'other_items'라고 부른다!
+}
+```
+여기서 정한 **Key('auction')**가 HTML에서 변수 이름이 됩니다.
+
+---
+
+.select_related('auction') : "입찰 정보 가져올 때, 그 경매 물품 정보(Auction)도 미리 같이 챙겨와"
+> 안쓰면 DB에서 N+1 문제 발생, 해당 코드로 DB를 1번만 다녀와서 정보를 다가져옴 문제해결
+
+### 동시성 문제와 더블클릭으로 인한 충전 오류 방지책!
+
+깃허브 코드_리뷰 Level_3 에 등록
+
+### form.is_valid()
+필수 항목이 비었는지, 숫자에 문자가 들어오진 않았는지 등 기본적인 검사를 수행합니다.
+
+
+ManyToManyField() : 장고에서 테이블을 자동으로 하나 더 만듭니다.(중간테이블 생성)
+
+
