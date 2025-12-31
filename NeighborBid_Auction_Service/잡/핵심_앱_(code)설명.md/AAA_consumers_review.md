@@ -26,3 +26,29 @@
 ## Redis 는 어디서 쓰이는가?
 
 `self.channel_layer.group_add` : channel_layer 메서드를 호출하는 순간 내부적으로 Redis 명령어가 실행됩니다. 
+
+---
+
+- type 함수 (현재 2가지 기능으로 썼다.)
+> 'type'에 적힌 문자열과 이름이 똑같은 메서드를 자동으로 찾아서 실행합니다
+```
+'type': 'auction_update' -> async def auction_update(self, event): 찾아서 실행
+
+'type': 'auction_end_notification'-> async def auction_end_notification(self, event): 찾아서 실행
+```
+1. group_send 안의 type (서버 내부용): 핸들러가 기능한다.(핸들러는 브라우저(JSON 데이터만 쏴주고 끝남)에게 최종적으로 전달해주는 역할)
+
+2. self.send 안의 type (클라이언트 통신용): 클라이언트가 기능한다.
+ 
+- json 하는 역할
+
+json.loads와 json.dumps : 파이썬과 자바스크립트가 서로 말이 안 통하기 때문입니다.
+> 데이터를 주고받으려면 약속된 문자열 형식인 JSON으로 변환
+
+json.dumps() : 파이썬 객체를 JSON 문자열로 변환
+
+> 핸들러가 JSON 문자열을 JS(브라우저)에게 전달
+ 
+> 웹소켓을 통과할때는 언어를 통일해서 json 으로 통과해야한다
+
+json.loads() : JSON 문자열을 파이썬 객체로 변환
