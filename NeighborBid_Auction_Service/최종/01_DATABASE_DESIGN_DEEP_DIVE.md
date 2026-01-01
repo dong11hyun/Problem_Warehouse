@@ -1,5 +1,4 @@
 # [Database] 데이터 무결성을 위한 경매 시스템 DB 설계 
-<img src="/NeighborBid_Auction_Service/images/All_database_2.png" width="100%">
 
 > - A1_NeighborBid_Auction 프로젝트의 데이터베이스 설계
 > - 엔티티(Entity) 간의 관계
@@ -10,7 +9,7 @@
 경매 시스템은 단순한 게시판과 달리 **'자산(돈과 물건)'** 이 이동하는 금융 시스템의 성격을 띱니다. 따라서 데이터베이스 설계 단계에서 가장 중요하게 고려한 가치는 **정합성(Consistency)** 과 **무결성(Integrity)** 입니다.
 
 저희 팀은 `SQLite3`를 1차 메인 저장소로 진행했습니다. (추후 운영 환경에서는 `PostgreSQL`로 마이그레이션 예정)
-- 실시간성이 필요한 데이터와 영구히 보존해야 할 데이터를 명확히 구분하여 스키마를 설계
+- 실시간성이 필요한 데이터와 영구히 보존해야 할 데이터를 명확히 구분하여 스키마를 설계했습니다.
 
 ---
 
@@ -18,80 +17,77 @@
 
 `User`를 중심으로 `Wallet`, `Auction`, `Bid`가 유기적으로 연결되어 있습니다.
 
-```mermaid
-erDiagram
-    User ||--|| Wallet : "1:1 (소유)"
-    User ||--o{ Auction : "1:N (판매)"
-    User ||--o{ Bid : "1:N (입찰)"
-    User ||--o{ Transaction : "1:N (거래내역)"
-    
-    Auction ||--o{ Bid : "1:N (입찰기록)"
-    Auction ||--|| Transaction : "1:1 (결제/정산)"
-    
-    Wallet ||--o{ Transaction : "1:N (내역)"
-
-    User {
-        int id PK
-        string username
-        string nickname
-        int reputation_score "신용도(평판)"
-    }
-
-    Wallet {
-        int id PK
-        int user_id FK
-        decimal balance "가용 잔액"
-        decimal locked_balance "입찰 중 묶인 금액"
-    }
-
-    Auction {
-        int id PK
-        int seller_id FK
-        string title
-        int current_price
-        boolean is_national "전국(실시간) 여부"
-        string status "WAITING, ACTIVE, ENDED"
-    }
-
-    Bid {
-        int id PK
-        int auction_id FK
-        int bidder_id FK
-        int amount "입찰금액"
-        datetime created_at
-    }
-```
+<img src="/NeighborBid_Auction_Service/images/All_database_2.png" width="100%">
 
 ---
 
 ## 3. 핵심 설계 포인트 Deep Dive
 
-단순한 테이블 구조 같아 보이지만, 그 내부에는 동시성 이슈와 데이터 무결성을 해결하기 위한 치열한 고민이 담겨 있습니다.
+> **동시성 이슈**와 **데이터 무결성**을 해결하기 위한 고민이 담겨 있습니다.
 
 ### 3.1. Wallet 모델의 이중 장부 시스템 (`balance` vs `locked_balance`)
 
-가장 큰 고민은 **"사용자가 입찰은 햇지만 아직 낙찰받지 못한 돈을 어떻게 처리할 것인가?"** 였습니다.
+가장 큰 고민은 **"사용자가 입찰은 했지만 아직 낙찰받지 못한 돈을 어떻게 처리할 것인가?"** 였습니다.
 
-*   **문제 상황:** 사용자가 10,000원을 가지고 경매 A에 10,000원을 입찰했습니다. 아직 경매는 안 끝났습니다. 이 때 사용자가 경매 B에 또 10,000원을 입찰한다면?
-*   **해결책 (`locked_balance`):** `balance`에서 돈을 바로 차감하지 않고 삭제해버리면 나중에 유찰되었을 때 기록이 복잡해집니다. 따라서 **'가용 잔액(balance)'**과 **'잠긴 잔액(locked_balance)'**으로 필드를 분리했습니다.
+#### 문제 상황: 이중 지출(Double Spending)의 위험
+
+> 단순히 `balance` 필드 하나만 사용할 경우 발생하는 시나리오
+
+**[시나리오] 사용자 A의 지갑에 10,000원이 있는 상황**
+
+| 단계 | 시간 | 사용자 행동 | 잘못된 시스템 (balance만 사용) | 문제점 |
+|:---:|:---:|---|---|---|
+| 1 | 14:00 | 경매 X에 10,000원 입찰 | `balance` 체크 → 10,000원 있음 ✅ 입찰 성공 | - |
+| 2 | 14:01 | 경매 Y에 10,000원 입찰 | `balance` 체크 → 여전히 10,000원 있음 ✅ 입찰 성공 | ⚠️ **같은 돈으로 2번 입찰** |
+| 3 | 15:00 | 경매 X 낙찰 | 10,000원 차감 → `balance = 0` | - |
+| 4 | 16:00 | 경매 Y 낙찰 | 10,000원 차감 → `balance = -10,000` | ⚠️ **음수 잔액 발생** |
+
+**핵심 문제:**
+- 입찰 시점에 `balance`를 차감하지 않으면 → **이중 지출** 허용
+- 입찰 시점에 `balance`를 차감하면 → **유찰 시 환불 로직**이 복잡해지고, "내 돈이 갑자기 사라졌다"는 UX 문제 발생
+  -  **DB 락**: 경매 종료 시 수십~수백 건의 환불 UPDATE가 동시에 발생 → Row Lock 병목 및 Deadlock 위험
+- 결과적으로 **"입찰 중인 돈"** 이라는 제3의 상태가 필요함을 깨달음
+
+
+#### ✅ 해결책: `locked_balance`로 자금의 상태를 분리
+> **가용 잔액(balance)** 과 **잠긴 잔액(locked_balance)** 으로 필드 분리
+
+**[개선된 시나리오] 이중 장부 시스템 적용 후**
+
+| 단계 | 시간 | 사용자 행동 | balance | locked_balance | 총 자산 | 결과 |
+|:---:|:---:|---|:---:|:---:|:---:|---|
+| 0 | - | 초기 상태 | 10,000 | 0 | 10,000 | - |
+| 1 | 14:00 | 경매 X에 10,000원 입찰 | 0 | 10,000 | 10,000 | ✅ 입찰 성공, 잔액 lock |
+| 2 | 14:01 | 경매 Y에 10,000원 입찰 시도 | 0 | 10,000 | 10,000 | **가용 잔액 부족 -> 입찰 실패** |
+| 3-A | 15:00 | 경매 X **낙찰** 시 | 0 | 0 | 0 | 판매자 송금 |
+| 3-B | 15:00 | 경매 X **유찰** 시 | 10,000 | 0 | 10,000 | **lock 해제 → 잔액 복구** |
 
 ```python
 # wallet/models.py
 class Wallet(models.Model):
-    # 실제 쓸 수 있는 돈
     balance = models.DecimalField(max_digits=12, decimal_places=0, default=0)
     
-    # 입찰 중이라 '내 돈이지만 쓸 수 없는' 돈 (이중 지출 방지 핵심)
     locked_balance = models.DecimalField(max_digits=12, decimal_places=0, default=0)
 ```
 
-이 설계를 통해 시스템은 언제나 `총 자산 = balance + locked_balance`라는 불변의 공식을 유지할 수 있으며, 이중 입찰 시도를 원천 봉쇄할 수 있었습니다.
+- **에스크로(Escrow) 패턴**을 적용
+-  **총 자산** = `balance + locked_balance`
+- 거래의 신뢰성을 시스템 레벨에서 보장
 
-### 3.2. Auction 모델의 `is_national` (하이브리드 아키텍처 지원)
+---
 
-초기 기획은 "모든 경매가 실시간"이었습니다. 하지만 당근마켓 같은 동네 직거래(중고 거래) 비중이 커지면서, **"굳이 모든 거래에 비싼 웹소켓 비용을 지불해야 할까?"** 라는 의문이 들었습니다.
+### 3.2. Auction 모델의 `is_national` 
 
-*   **전략:** 데이터베이스 컬럼 하나로 시스템 동작 모드를 완전히 분리하는 **하이브리드 전략**을 택했습니다.
+1. 초기 기획은 "모든 경매에 실시간"  
+2. 동네 직거래(중고 거래) 수요 고려 
+3. "모든 거래에 비싼 웹소켓 비용을 지불해야 할까?" 라는 의문
+
+| 경매 유형 | 예시품목 | 입찰 빈도(예상) | 실시간 필요성 | 인프라 비용 |
+|:---:|---|:---:|:---:|:---:|
+| 전국 실시간 | 한정판 스니커즈, 인기 굿즈 | 초당 10~100건 |  **필수** | 높음 (WebSocket + Redis) |
+| 동네 경매 | 중고 가전, 가구 | 하루 1~5건 | 불필요 | 낮음 (HTTP만) |
+
+*   **전략:** 데이터베이스 컬럼 하나로 시스템 동작 모드를 완전히 분리
 
 ```python
 # auctions/models.py
@@ -101,14 +97,101 @@ class Auction(models.Model):
     is_national = models.BooleanField(default=False)
 ```
 
-이 플래그(`boolean`) 하나 덕분에 백엔드 로직은 `if auction.is_national:` 분기문 하나로 거대한 두 아키텍처(HTTP vs WebSocket)를 유연하게 오갈 수 있게 되었습니다.
+플래그(`boolean`) 사용 => http / websocket 유연한 흐름 `if auction.is_national:` 분기문 하나로 거대한 두 아키텍처(HTTP vs WebSocket)를 유연하게 오갈 수 있게 되었습니다.
+
+**아키텍처 분기 흐름:**
+```
+입찰 요청 → is_national 체크
+              ├─ True  → WebSocket 브로드캐스트 + Redis 캐싱 + DB 비동기 반영
+              └─ False → 단순 DB 트랜잭션 (동기 처리)
+```
+
+---
 
 ### 3.3. Transaction 모델의 불변성 (Immutability)
 
-금융 거래 내역은 절대 수정되어서는 안 됩니다. 따라서 `Transaction` 모델은 `UPDATE`가 발생하지 않는 **Insert-Only** 정책을 고수했습니다.
+금융 거래 내역은 절대 수정되어서는 안 되기 때문에 저희는 `Transaction` 모델에 대해 `UPDATE`나 `DELETE`가 발생하지 않는 **Insert-Only** 방향으로 진행했습니다.
 
-*   환불 발생 시: 기존 내역을 지우는 것이 아니라, `BID_REFUND`라는 새로운 타입의 **상쇄 트랜잭션(Compensating Transaction)**을 생성하여 기록을 남깁니다.
-*   이를 통해 추후 CS 이슈 발생 시 자금의 정확한 흐름을 역추적할 수 있습니다.
+#### 왜 UPDATE/DELETE를 금지하는가?
+
+| 방식 | 환불 처리 예시 | 문제점 |
+|:---:|---|---|
+| UPDATE | 상태를 '취소'로 변경, 금액수정..등 | 시간관리 불분명, **기록 소실** |
+| DELETE | 기존 레코드 삭제 | 거래 자체가 **증발**, 감사 추적 불가 |
+| INSERT | 상쇄 트랜잭션 새로 생성 | 원본 + 환불 내역 **모두 보존** |
+
+**[예시] 10,000원 입찰 후 유찰된 경우의 Transaction 테이블**
+
+| id | type | amount | created_at | 설명 |
+|:---:|:---:|:---:|:---:|---|
+| 1 | `BID_LOCK` | -10,000 | 14:00 | 입찰 시 잔액에서 차감 |
+| 2 | `BID_REFUND` | +10,000 | 15:00 | 유찰로 인한 환불 |
+
+*   **동작 방식**: 환불 발생 시 기존 내역을 지우는 것이 아니라, `BID_REFUND`라는 새로운 타입의 **트랜잭션(Compensating Transaction)**을 생성하여 기록을 남깁니다.
+*   **장점**: 추후 문제 발생 시 자금의 정확한 흐름을 역추적
+
+#### 실제 구현 (Implementation)
+
+- 이러한 불변성 원칙은 `auctions/services.py`의 비즈니스 로직(`place_bid`, `determine_winner` 등)에서 **오직 `Transaction.objects.create()` 메서드만 사용**함으로써 코드 레벨에서 엄격하게 지켰음.
+- 우발적인 데이터 변경을 막기 위해 `wallet/admin.py` 설정에서도 삭제 금지(`can_delete = False`)와 읽기 전용(`readonly_fields`) 옵션을 적용하여 안전장치를 마련.
+
+---
+
+### 3.4. 조회 성능 최적화를 위한 반정규화 (`Auction.current_price`)
+
+경매 리스트에서 가장 중요한 정보는 **현재 가격** 입니다. 
+정규화 원칙대로라면 매번 `Bid` 테이블을 조회하여 `MAX(amount)`를 계산.
+이는 조회의 빈도가 압도적으로 높은 서비스 특성상 비효율적입니다.
+
+#### 정규화 vs 반정규화 트레이드오프
+
+| 방식 | 쿼리 예시 | 성능 | 데이터 정합성 |
+|:---:|---|:---:|:---:|
+| 정규화 | `SELECT MAX(amount) FROM bid WHERE auction_id = ?` | ⚠️ O(N) | ✅ 항상 정확 |
+| 반정규화 | `SELECT current_price FROM auction WHERE id = ?` | ✅ O(1) | ⚠️ 갱신 로직 필요 |
+
+*   **반정규화(Denormalization):** `Auction` 테이블에 `current_price` 컬럼을 두고, 입찰이 발생할 때마다 갱신하는 방식을 택했습니다.
+*   **이점:** 리스트 조회 시 조인(Join)이나 집계(Aggregation) 연산 없이 단순 `SELECT` 만으로 데이터를 가져올 수 있어 조회 성능을 **O(1)**에 가깝게 최적화했습니다.
+
+**정합성 보장 전략:**
+```python
+# 입찰 시 원자적으로 current_price 갱신 (트랜잭션 내에서 처리)
+with transaction.atomic():
+    bid = Bid.objects.create(auction=auction, amount=new_amount)
+    auction.current_price = new_amount
+    auction.save(update_fields=['current_price'])
+```
+
+> 💡 **Read:Write 비율이 100:1 이상**인 경매 리스트 특성상, 쓰기 시 약간의 오버헤드를 감수하더라도 읽기 성능을 극대화하는 것이 합리적인 선택이었습니다.
+
+### 3.5. 지역 기반 거래의 핵심 (`Region` 계층 구조)
+
+동네 직거래의 기반이 되는 지역 정보는 계층 구조로 설계했습니다. (예: `서울` > `강남구` > `역삼동`)
+
+#### 계층 구조 설계
+
+```
+Region 테이블
+├── id: 1, name: "서울", parent_id: NULL, level: 1
+│   ├── id: 10, name: "강남구", parent_id: 1, level: 2
+│   │   ├── id: 101, name: "역삼동", parent_id: 10, level: 3
+│   │   └── id: 102, name: "삼성동", parent_id: 10, level: 3
+│   └── id: 11, name: "서초구", parent_id: 1, level: 2
+```
+
+*   **설계 의도:** 사용자는 자신의 동네뿐만 아니라 인접 동네까지 범위를 넓혀서 경매를 탐색할 수 있어야 합니다.
+
+#### 인접 동네 조회 시나리오
+
+| 사용자 설정 | 조회 범위 | 쿼리 복잡도 |
+|:---:|---|:---:|
+| 내 동네만 | 역삼동 | 단순 WHERE |
+| 같은 구 | 역삼동 + 삼성동 + ... | parent_id 기준 조회 |
+| 인접 구까지 | 강남구 전체 + 서초구 전체 | 재귀 또는 미리 계산된 인접 테이블 |
+
+*   **고려사항:** 계층의 깊이가 깊어질수록 재귀 쿼리 등으로 인해 성능 저하가 발생할 수 있으므로, 조회 빈도가 높은 지역 데이터는 별도의 캐싱 전략이 필요할 수 있음을 인지하고 설계했습니다.
+
+> 💡 **최적화 방안:** 인접 동네 관계를 미리 계산한 `RegionAdjacency` 테이블을 두거나, Redis에 지역별 인접 리스트를 캐싱하는 방식을 검토 중입니다.
 
 ---
 
@@ -120,6 +203,12 @@ class Auction(models.Model):
     *   `CREATE INDEX idx_active_auction ON auction (status, end_time);` (진행 중인 경매 중 곧 끝나는 순 조회)
 2.  **입찰 내역 조회:** `Bid` 테이블의 `auction_id`와 `amount` 복합 인덱스
     *   `CREATE INDEX idx_bid_ranking ON bid (auction_id, amount DESC);` (특정 경매의 현재 1등 입찰자 초고속 조회)
+3.  **초고속 입찰(Hot Deal) 대응 (Redis Write-Behind):**
+    *   초당 100건 이상의 입찰이 몰리는 인기 경매의 경우, 매번 DB를 업데이트하는 것은 큰 부하가 됩니다.
+    *   따라서 Redis에서 1차적으로 입찰 카운팅과 가격 갱신을 처리하고, 일정 주기마다 DB에 일괄 반영하는 **Write-Behind** 전략을 도입할 예정입니다.
+4.  **거래 내역의 확장성 (Sharding/Partitioning):**
+    *   `Transaction` 테이블은 서비스가 지속됨에 따라 무한히 커지는 성격을 가집니다.
+    *   단일 테이블의 성능 저하를 막기 위해, 월(Month) 단위로 테이블을 물리적으로 분리하는 **파티셔닝(Partitioning)** 전략을 수립했습니다.
 
 ---
 
