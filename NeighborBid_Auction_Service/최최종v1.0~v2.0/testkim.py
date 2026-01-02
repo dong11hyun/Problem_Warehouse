@@ -119,14 +119,14 @@ class ConcurrencyTestCase(TransactionTestCase):
         
         # 결과 출력
         print("\n" + "="*60)
-        print("🧪 동시성 테스트 결과")
+        print(" 동시성 테스트 결과")
         print("="*60)
         print(f"초기 잔액: 10,000원")
         print(f"입찰 시도: 경매 A에 10,000원, 경매 B에 10,000원 (동시)")
         print("-"*60)
         
         for r in results:
-            status_icon = "✅" if r['status'] == 'success' else "❌"
+            status_icon = "" if r['status'] == 'success' else "x"
             print(f"{status_icon} {r['auction']}: {r['status']}")
             if 'error' in r:
                 print(f"   → 사유: {r['error']}")
@@ -139,21 +139,21 @@ class ConcurrencyTestCase(TransactionTestCase):
         print(f"총 자산: {self.bidder_wallet.balance + self.bidder_wallet.locked_balance}원")
         print("="*60)
         
-        # ✅ 검증: 정확히 1개만 성공해야 함
+        #  검증: 정확히 1개만 성공해야 함
         success_count = sum(1 for r in results if r['status'] == 'success')
         self.assertEqual(success_count, 1, 
             f"1개만 성공해야 하는데 {success_count}개 성공함!")
         
-        # ✅ 검증: 잔액이 음수가 되면 안 됨
+        #  검증: 잔액이 음수가 되면 안 됨
         self.assertGreaterEqual(self.bidder_wallet.balance, 0,
             f"잔액이 음수가 됨! balance={self.bidder_wallet.balance}")
         
-        # ✅ 검증: 총 자산은 여전히 10,000원이어야 함
+        #  검증: 총 자산은 여전히 10,000원이어야 함
         total = self.bidder_wallet.balance + self.bidder_wallet.locked_balance
         self.assertEqual(total, Decimal('10000'),
             f"총 자산이 변함! {total}원")
         
-        print("✅ 테스트 통과: 이중 지출이 정상적으로 차단됨!")
+        print(" 테스트 통과: 이중 지출이 정상적으로 차단됨!")
 
 
 class BasicBidTestCase(TestCase):
